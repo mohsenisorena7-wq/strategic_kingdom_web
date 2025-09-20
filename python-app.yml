@@ -1,0 +1,196 @@
+# strategic_kingdom_pro.py
+import random, json, os, time
+from tkinter import Tk, Label, Button, Text, Scrollbar, END, Frame, Canvas, Toplevel, simpledialog, messagebox
+import pygame
+
+SAVE_FILE = 'game_save_pro.json'
+CELL_SIZE = 80
+MAP_SIZE = 5
+
+BUILDING_ICONS = {"مزرعه":"🌾","معدن":"⛏️","سربازخانه":"🏰"}
+BUILDING_COST = {"مزرعه":30,"معدن":40,"سربازخانه":50}
+
+# Initialize pygame mixer for sound
+pygame.mixer.init()
+
+def play_sound(file):
+    try:
+        pygame.mixer.Sound(file).play()
+    except: pass
+
+class Country:
+    def __init__(self,name):
+        self.name=name
+        self.gold=100
+        self.food=60
+        self.population=12
+        self.army=0
+        self.territories=[{'name':'پایتخت','buildings':[],'army':0,'defense':1,'level':1}]
+        self.technology={'مهمات':1,'کشاورزی':1,'دفاعی':1,'اقتصادی':1,'مهندسی':1}
+        self.diplomacy='صلح'
+        self.score=0
+    def total_army(self):
+        return self.army+sum(t.get('army',0) for t in self.territories)
+    def to_dict(self):
+        return self.__dict__
+    @classmethod
+    def from_dict(cls,data):
+        c=cls(data.get('name','ناشناس'))
+        c.__dict__.update(data)
+        return c
+
+class Game:
+    def __init__(self):
+        self.player=Country("پادشاهی شما")
+        self.ai=Country("امپراتوری دشمن")
+        self.year=0
+        self.history=[]
+        self.load_game()
+    def save_game(self):
+        data={'player':self.player.to_dict(),'ai':self.ai.to_dict(),'year':self.year,'history':self.history}
+        with open(SAVE_FILE,'w',encoding='utf-8') as f:
+            json.dump(data,f,ensure_ascii=False,indent=2)
+    def load_game(self):
+        if os.path.exists(SAVE_FILE):
+            try:
+                with open(SAVE_FILE,'r',encoding='utf-8') as f:
+                    data=json.load(f)
+                    self.player=Country.from_dict(data['player'])
+                    self.ai=Country.from_dict(data['ai'])
+                    self.year=data.get('year',0)
+                    self.history=data.get('history',[])
+            except:
+                print("خطا در بارگذاری، بازی جدید آغاز شد.")
+    def record_history(self,note=""):
+        self.history.append({'سال':self.year,'طلا':self.player.gold,'غذا':self.player.food,
+                             'جمعیت':self.player.population,'سربازان':self.player.total_army(),
+                             'قلمروها':len(self.player.territories),'یادداشت':note})
+    def random_event(self):
+        events=[("قحطی",lambda:self.change_food(-15)),
+                ("سیل",lambda:self.change_food(-10)),
+                ("کشاورزی پر برکت",lambda:self.change_food(+20)),
+                ("حمله دزدان",lambda:self.change_gold(-25))]
+        if random.random()<0.5:
+            name,fn=random.choice(events)
+            fn()
+            play_sound("event.wav")  # رخداد صدا
+            return name
+        return None
+    def change_gold(self,amount):
+        self.player.gold=max(0,self.player.gold+amount)
+    def change_food(self,amount):
+        self.player.food=max(0,self.player.food+amount)
+    def ai_turn(self):
+        if random.random()<0.3:self.ai.army+=random.randint(1,5)
+        if random.random()<0.2:self.ai.territories.append({'name':f'قلمرو_{len(self.ai.territories)+1}','buildings':[],'army':random.randint(1,3),'defense':1,'level':1})
+    # ---------------- GUI ----------------
+    def start_gui(self):
+        root=Tk()
+        root.title("پادشاهی استراتژیک حرفه‌ای")
+        root.geometry("1200x750")
+
+        status_text=Text(root,height=12,width=70)
+        status_text.pack(side='top',fill='x')
+        scrollbar=Scrollbar(root,command=status_text.yview)
+        status_text.config(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side='right',fill='y')
+
+        canvas=Canvas(root,width=CELL_SIZE*MAP_SIZE,height=CELL_SIZE*MAP_SIZE,bg='lightgrey')
+        canvas.pack(side='left', padx=10,pady=10)
+
+        tooltip=Label(root,text="",bg='yellow')
+        tooltip.place_forget()
+
+        def draw_map():
+            canvas.delete("all")
+            total=len(self.player.territories)+len(self.ai.territories)
+            for i in range(MAP_SIZE):
+                for j in range(MAP_SIZE):
+                    x0,y0=j*CELL_SIZE,i*CELL_SIZE
+                    x1,y1=x0+CELL_SIZE,y0+CELL_SIZE
+                    idx=i*MAP_SIZE+j
+                    if idx<len(self.player.territories): color='lightblue';terr=self.player.territories[idx]
+                    elif idx-len(self.player.territories)<len(self.ai.territories): color='lightcoral';terr=self.ai.territories[idx-len(self.player.territories)]
+                    else: color='lightgrey';terr={'name':'خالی','buildings':[],'army':0,'level':0}
+                    rect=canvas.create_rectangle(x0,y0,x1,y1,fill=color)
+                    text=terr['name'][:6]+'\n'+f"🏹{terr['army']} "
+                    for b in terr['buildings']: text+=BUILDING_ICONS.get(b,'')
+                    canvas.create_text(x0+CELL_SIZE/2,y0+CELL_SIZE/2,text=text)
+                    canvas.tag_bind(rect,"<Button-1>",lambda e,r=terr:click_territory(r))
+
+        def show_tooltip(event):
+            i=int(event.y//CELL_SIZE)
+            j=int(event.x//CELL_SIZE)
+            idx=i*MAP_SIZE+j
+            if idx<len(self.player.territories):terr=self.player.territories[idx]
+            elif idx-len(self.player.territories)<len(self.ai.territories):terr=self.ai.territories[idx-len(self.player.territories)]
+            else: terr=None
+            if terr:
+                s=f"{terr['name']}\nارتقا:{terr.get('level',0)}\nسرباز:{terr.get('army',0)}\nساختمان‌ها:{','.join(terr.get('buildings',[]))}"
+                tooltip.config(text=s)
+                tooltip.place(x=event.x+10,y=event.y+10)
+        def hide_tooltip(event):
+            tooltip.place_forget()
+        canvas.bind("<Motion>",show_tooltip)
+        canvas.bind("<Leave>",hide_tooltip)
+
+        def animate_attack(src_idx,dst_idx):
+            x0=(dst_idx%MAP_SIZE)*CELL_SIZE+CELL_SIZE//2
+            y0=(dst_idx//MAP_SIZE)*CELL_SIZE+CELL_SIZE//2
+            for _ in range(5):
+                oval=canvas.create_oval(x0-5,y0-5,x0+5,y0+5,fill='orange')
+                root.update();time.sleep(0.05)
+                canvas.delete(oval)
+            play_sound("attack.wav")
+
+        def click_territory(terr):
+            if terr in self.player.territories:
+                choice=simpledialog.askstring("عملیات","ساختمان بساز/ارتقا/سرباز? (b/u/a)")
+                if choice=='b':
+                    b=simpledialog.askstring("انتخاب ساختمان","نام ساختمان (مزرعه/معدن/سربازخانه)")
+                    if b in BUILDING_COST and self.player.gold>=BUILDING_COST[b]:
+                        terr['buildings'].append(b)
+                        self.player.gold-=BUILDING_COST[b]
+                        play_sound("build.wav")
+                elif choice=='u':
+                    terr['level']+=1
+                elif choice=='a':
+                    terr['army']+=5
+            elif terr in self.ai.territories:
+                if messagebox.askyesno("حمله","حمله به این قلمرو؟"):
+                    player_power=self.player.total_army()
+                    ai_power=terr['army']
+                    animate_attack(0,self.ai.territories.index(terr))
+                    if player_power>ai_power:
+                        self.ai.territories.remove(terr)
+                        messagebox.showinfo("نتیجه حمله","حمله موفق بود!")
+                        play_sound("win.wav")
+                    else:
+                        messagebox.showinfo("نتیجه حمله","حمله شکست خورد!")
+                        play_sound("lose.wav")
+            draw_map()
+
+        def end_turn():
+            self.year+=1
+            self.player.gold+=len(self.player.territories)*10
+            self.player.food+=len(self.player.territories)*5
+            evt=self.random_event()
+            if evt: messagebox.showinfo("رخداد",f"رخداد: {evt}")
+            self.ai_turn()
+            self.record_history()
+            self.save_game()
+            draw_map()
+            status_text.delete(1.0,END)
+            status_text.insert(END,f"سال:{self.year}\n{self.player.__dict__}")
+
+        btn_frame=Frame(root)
+        btn_frame.pack(side='right',fill='y', padx=10,pady=10)
+        Button(btn_frame,text="پایان نوبت",command=end_turn).pack(pady=5)
+
+        draw_map()
+        status_text.insert(END,f"سال:{self.year}\n{self.player.__dict__}")
+        root.mainloop()
+
+if __name__=="__main__":
+    game=Game()
+    game.start_gui()
